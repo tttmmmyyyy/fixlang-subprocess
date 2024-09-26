@@ -1,0 +1,9 @@
+[general]
+name = "subprocess"
+version = "0.1.0"
+
+[build]
+files = ["subprocess.fix"]
+
+[build.test]
+files = ["test.fix"]
