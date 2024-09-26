@@ -4,6 +4,9 @@ version = "0.1.0"
 
 [build]
 files = ["subprocess.fix"]
+objects = ["lib.o"]
+preliminary_commands = [["make", "lib.o"]]
+library_paths = ["."]
 
 [build.test]
 files = ["test.fix"]
