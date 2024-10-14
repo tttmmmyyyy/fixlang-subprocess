@@ -8,7 +8,7 @@
             let output = *read_string(stdout); // Read standard output of the command.
             println(output).lift
         )).try(exit_with_msg(1));
-        eval assert_eq(|_|"", exit_status.as_exit, 0_U8);
+        eval *assert_eq(|_|"", exit_status.as_exit, 0_U8);
     
         eval *println("Run \"sed s/w/W/\" and write \"Hello world!\" to the standard input.");
         let (_, exit_status) = *run_with_stream("sed", ["/usr/bin/sed", "s/w/W/"], |(stdin, stdout, stderr)| (
@@ -17,7 +17,7 @@
             let output = *read_string(stdout); // Read standard output of the command.
             println(output).lift
         )).try(exit_with_msg(1));
-        eval assert_eq(|_|"", exit_status.as_exit, 0_U8);
+        eval *assert_eq(|_|"", exit_status.as_exit, 0_U8);
      
         pure()
     );
