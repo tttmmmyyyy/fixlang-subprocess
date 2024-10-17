@@ -42,12 +42,14 @@ run_with_stream = |com, args, worker| (
         let out_error : Array Ptr = Array::empty(1)._unsafe_set_size(1);
         let out_files : Array Ptr = Array::empty(3)._unsafe_set_size(3);
         let out_pid : Array I64 = Array::empty(1)._unsafe_set_size(1);
-        eval FFI_CALL[() fixsubprocess_fork_execvp(Ptr, Ptr, Ptr, Ptr, Ptr), com, args, out_error._get_ptr, out_files._get_ptr, out_pid._get_ptr];
+        eval *(IOFail::lift $ IO::from_runner $ |io| 
+            FFI_CALL_IO[() fixsubprocess_fork_execvp(Ptr, Ptr, Ptr, Ptr, Ptr), com, args, out_error._get_ptr, out_files._get_ptr, out_pid._get_ptr, io]
+        );
         if out_error.@(0) != nullptr {
             // Some error occurred.
             let msg_ptr = out_error.@(0);
             let err_msg = String::_unsafe_from_c_str_ptr(msg_ptr);
-            eval FFI_CALL[() free(Ptr), msg_ptr];
+            eval *(IOFail::lift $ IO::from_runner $ |io| FFI_CALL_IO[() free(Ptr), msg_ptr, io]);
             IOFail::throw $ err_msg
         };
         let handles = (
