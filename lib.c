@@ -81,6 +81,16 @@ void fixsubprocess_fork_execvp(const char *program_path, char *const argv[], cha
     }
 }
 
+typedef struct
+{
+    uint8_t is_timeout;
+    uint8_t wait_failed;
+    uint8_t exit_status;
+    uint8_t exit_status_available;
+    uint8_t stop_signal;
+    uint8_t stop_signal_available;
+} WaitResult;
+
 // Wait termination of child process specified.
 // * `timeout` - Positive for timeout value (in seconds), negative for no timeout.
 // * `out_is_timeout` - Set to 1 when return by timeout, or set to 0 otherwise. Should not be NULL when `timeout` is not NULL.
@@ -90,12 +100,7 @@ void fixsubprocess_fork_execvp(const char *program_path, char *const argv[], cha
 // * `out_stop_signal` - The signal number which caused the termination of the child process. This value should be used only when `*out_stop_signal_available == 1`.
 // * `out_stop_signal_available` - Set to 1 when the stop signal number is available, or set to 0 otherwise.
 void fixsubprocess_wait_subprocess(int64_t pid, double timeout,
-                                   uint8_t *out_is_timeout,
-                                   uint8_t *out_wait_failed,
-                                   uint8_t *out_exit_status,
-                                   uint8_t *out_exit_status_available,
-                                   uint8_t *out_stop_signal,
-                                   uint8_t *out_stop_signal_available)
+                                   WaitResult *out)
 {
     int wait_status;
     pid_t wait_return;
@@ -104,10 +109,10 @@ void fixsubprocess_wait_subprocess(int64_t pid, double timeout,
     struct timespec now;
     double now_f;
 
-    *out_is_timeout = 0;
-    *out_exit_status_available = 0;
-    *out_stop_signal_available = 0;
-    *out_wait_failed = 0;
+    out->is_timeout = 0;
+    out->exit_status_available = 0;
+    out->stop_signal_available = 0;
+    out->wait_failed = 0;
 
     if (timeout < 0.0)
     {
@@ -129,26 +134,26 @@ void fixsubprocess_wait_subprocess(int64_t pid, double timeout,
             now_f = (double)now.tv_sec + (double)now.tv_nsec / 1e9;
             if (now_f - start_f >= timeout)
             {
-                *out_is_timeout = 1;
+                out->is_timeout = 1;
                 break;
             }
         }
     }
     if (wait_return == -1)
     {
-        *out_wait_failed = 1;
+        out->wait_failed = 1;
         return;
     }
     if (WIFEXITED(wait_status))
     {
-        *out_exit_status_available = 1;
-        *out_exit_status = (uint8_t)WEXITSTATUS(wait_status);
+        out->exit_status_available = 1;
+        out->exit_status = (uint8_t)WEXITSTATUS(wait_status);
         return;
     }
     if (WIFSIGNALED(wait_status))
     {
-        *out_stop_signal_available = 1;
-        *out_stop_signal = (uint8_t)WSTOPSIG(wait_status);
+        out->stop_signal_available = 1;
+        out->stop_signal = (uint8_t)WSTOPSIG(wait_status);
         return;
     }
 }

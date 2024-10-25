@@ -24,6 +24,11 @@ run_string = |com, args, input| (
     ))
 );
 
+// Result of `fixsubprocess_wait_subprocess`.
+// 
+// This struct is used in the internal implementation.
+type WaitResult = box struct { is_timeout : U8, wait_failed : U8, exit_status : U8, exit_status_available : U8, stop_signal : U8, stop_signal_available : U8 };
+
 // `run_with_stream(com, args, worker)` executes a command specified by `com` with arguments `args`. 
 // 
 // The function `worker` receives three `IOHandle`s which are piped to the stdin, stdout and stderr of the running command.
@@ -64,33 +69,21 @@ run_with_stream = |com, args, worker| (
         eval *handles.@2.close_file.lift;
 
         // Wait for subprocess.
-        let out_is_timeout : Array U8 = Array::empty(1)._unsafe_set_size(1);
-        let out_wait_failed : Array U8 = Array::empty(1)._unsafe_set_size(1);
-        let out_exit_status : Array U8 = Array::empty(1)._unsafe_set_size(1);
-        let out_exit_status_available : Array U8 = Array::empty(1)._unsafe_set_size(1);
-        let out_stop_signal : Array U8 = Array::empty(1)._unsafe_set_size(1);
-        let out_stop_signal_available : Array U8 = Array::empty(1)._unsafe_set_size(1);
-        eval FFI_CALL[() fixsubprocess_wait_subprocess(I64, F64, Ptr, Ptr, Ptr, Ptr, Ptr, Ptr), 
-            pid, -1.0, // No timeout 
-            out_is_timeout._get_ptr,
-            out_wait_failed._get_ptr, 
-            out_exit_status._get_ptr, out_exit_status_available._get_ptr, 
-            out_stop_signal._get_ptr, out_stop_signal_available._get_ptr
-        ];
-        // Extends lifetime of output variables
-        let _ = out_is_timeout;
-        let _ = out_wait_failed;
-        let _ = out_exit_status;
-        let _ = out_exit_status_available;
-        let _ = out_stop_signal;
-        let _ = out_stop_signal_available;
+        let out = WaitResult { is_timeout: 0_U8, wait_failed: 0_U8, exit_status: 0_U8, exit_status_available: 0_U8, stop_signal: 0_U8, stop_signal_available: 0_U8 };
+        let (out, _) = *out.unsafe_mutate_boxed_data_io(|out_ptr|
+            IO::from_runner $ |ios| FFI_CALL_IO[
+                () fixsubprocess_wait_subprocess(I64, F64, Ptr), 
+                pid, -1.0, // No timeout 
+                out_ptr, ios
+            ]
+        ).lift;
 
-        let exit_status = if out_wait_failed.@(0) == 1_U8 { 
+        let exit_status = if out.@wait_failed == 1_U8 { 
             ExitStatus::wait_failed()
-        } else if out_exit_status_available.@(0) == 1_U8 {
-            ExitStatus::exit(out_exit_status.@(0))
-        } else if out_stop_signal_available.@(0) == 1_U8 {
-            ExitStatus::signaled(out_stop_signal.@(0))
+        } else if out.@exit_status_available == 1_U8 {
+            ExitStatus::exit(out.@exit_status)
+        } else if out.@stop_signal_available == 1_U8 {
+            ExitStatus::signaled(out.@stop_signal)
         } else {
             ExitStatus::wait_failed()
         };
