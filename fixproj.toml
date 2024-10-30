@@ -11,3 +11,4 @@ library_paths = ["."]
 [build.test]
 files = ["test.fix"]
 memcheck = true
+debug = true

@@ -42,14 +42,18 @@ run_with_stream = |com, args, worker| (
     eval *pure();
     // Convert `args : Array String` to `Array Ptr`, and prolong lifetime so that elements will not be released.
     // Also, add NULL terminator to `args`.
-    args.borrow_ptr(|_| args.map(_get_c_str).push_back(nullptr).borrow_ptr(|args: Ptr| com.borrow_c_str(|com : Ptr| (
+    args.do_with_retained(|args| args.map(_get_c_str).push_back(nullptr).borrow_ptr(|args: Ptr| com.borrow_c_str(|com : Ptr| (
         // Execute command.
         let out_error : Array Ptr = Array::empty(1)._unsafe_set_size(1);
         let out_files : Array Ptr = Array::empty(3)._unsafe_set_size(3);
         let out_pid : Array I64 = Array::empty(1)._unsafe_set_size(1);
-        eval *(IOFail::lift $ IO::from_runner $ |io| 
-            FFI_CALL_IO[() fixsubprocess_fork_execvp(Ptr, Ptr, Ptr, Ptr, Ptr), com, args, out_error._get_ptr, out_files._get_ptr, out_pid._get_ptr, io]
-        );
+        let (out_error, (out_files, (out_pid, _))) = *out_error.unsafe_mutate_boxed_data_io(|out_err_ptr|
+            out_files.unsafe_mutate_boxed_data_io(|out_files_ptr|
+                out_pid.unsafe_mutate_boxed_data_io(|out_pid_ptr|
+                    IO::from_runner $ |ios| FFI_CALL_IO[() fixsubprocess_fork_execvp(Ptr, Ptr, Ptr, Ptr, Ptr), com, args, out_err_ptr, out_files_ptr, out_pid_ptr, ios]
+                )
+            )
+        ).lift;
         if out_error.@(0) != nullptr {
             // Some error occurred.
             let msg_ptr = out_error.@(0);
