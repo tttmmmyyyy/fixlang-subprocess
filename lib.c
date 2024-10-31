@@ -53,6 +53,7 @@ void fixsubprocess_fork_execvp(const char *program_path, char *const argv[], cha
         execvp(program_path, argv);
 
         // If execvp fails,
+        perror("`execvp` failed.");
         exit(1);
     }
     else

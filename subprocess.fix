@@ -39,58 +39,64 @@ type WaitResult = box struct { is_timeout : U8, wait_failed : U8, exit_status : 
 // * `worker : (IOHandle, IOHandle, IOHandle) -> IOFail a` - Receives three `IOHandle`s which are piped to stdin, stdout and stderr of the running command.
 run_with_stream : String -> Array String -> ((IOHandle, IOHandle, IOHandle) -> IOFail a) -> IOFail (a, ExitStatus);
 run_with_stream = |com, args, worker| (
-    eval *pure();
-    // Convert `args : Array String` to `Array Ptr`, and prolong lifetime so that elements will not be released.
-    // Also, add NULL terminator to `args`.
-    args.do_with_retained(|args| args.map(_get_c_str).push_back(nullptr).borrow_ptr(|args: Ptr| com.borrow_c_str(|com : Ptr| (
-        // Execute command.
-        let out_error : Array Ptr = Array::empty(1)._unsafe_set_size(1);
-        let out_files : Array Ptr = Array::empty(3)._unsafe_set_size(3);
-        let out_pid : Array I64 = Array::empty(1)._unsafe_set_size(1);
-        let (out_error, (out_files, (out_pid, _))) = *out_error.unsafe_mutate_boxed_data_io(|out_err_ptr|
-            out_files.unsafe_mutate_boxed_data_io(|out_files_ptr|
-                out_pid.unsafe_mutate_boxed_data_io(|out_pid_ptr|
-                    IO::from_runner $ |ios| FFI_CALL_IO[() fixsubprocess_fork_execvp(Ptr, Ptr, Ptr, Ptr, Ptr), com, args, out_err_ptr, out_files_ptr, out_pid_ptr, ios]
+    IOFail::from_io_result $ args.borrow_ptr_io(|_|
+        let arg_ptrs = args.map(_get_c_str).push_back(nullptr);
+        arg_ptrs.borrow_ptr_io(|args| com.@_data.borrow_ptr_io(|com|
+            // Execute command.
+            let out_error : Array Ptr = Array::empty(1)._unsafe_set_size(1);
+            let out_files : Array Ptr = Array::empty(3)._unsafe_set_size(3);
+            let out_pid : Array I64 = Array::empty(1)._unsafe_set_size(1);
+            let (out_error, (out_files, (out_pid, _))) = *out_error.unsafe_mutate_boxed_data_io(|out_err_ptr|
+                out_files.unsafe_mutate_boxed_data_io(|out_files_ptr|
+                    out_pid.unsafe_mutate_boxed_data_io(|out_pid_ptr|
+                        IO::from_runner $ |ios| FFI_CALL_IO[() fixsubprocess_fork_execvp(Ptr, Ptr, Ptr, Ptr, Ptr), com, args, out_err_ptr, out_files_ptr, out_pid_ptr, ios]
+                    )
                 )
-            )
-        ).lift;
-        if out_error.@(0) != nullptr {
-            // Some error occurred.
-            let msg_ptr = out_error.@(0);
-            let err_msg = String::_unsafe_from_c_str_ptr(msg_ptr);
-            eval *(IOFail::lift $ IO::from_runner $ |io| FFI_CALL_IO[() free(Ptr), msg_ptr, io]);
-            IOFail::throw $ err_msg
-        };
-        let handles = (
-            IOHandle::from_file_ptr(out_files.@(0)),
-            IOHandle::from_file_ptr(out_files.@(1)),
-            IOHandle::from_file_ptr(out_files.@(2))
-        );
-        let pid = out_pid.@(0);
-        let worker_res = *worker(handles);
-        eval *handles.@0.close_file.lift;
-        eval *handles.@1.close_file.lift;
-        eval *handles.@2.close_file.lift;
+            );
+            if out_error.@(0) != nullptr {
+                // Some error occurred.
+                let msg_ptr = out_error.@(0);
+                let err_msg = String::_unsafe_from_c_str_ptr(msg_ptr);
+                (IO::from_runner $ |io| FFI_CALL_IO[() free(Ptr), msg_ptr, io]);;
+                pure $ Result::err $ err_msg
+            };
+            let handles = (
+                IOHandle::from_file_ptr(out_files.@(0)),
+                IOHandle::from_file_ptr(out_files.@(1)),
+                IOHandle::from_file_ptr(out_files.@(2))
+            );
+            let pid = out_pid.@(0);
+            let worker_res = *worker(handles).to_result;
+            handles.@0.close_file;;
+            handles.@1.close_file;;
+            handles.@2.close_file;;
 
-        // Wait for subprocess.
-        let out = WaitResult { is_timeout: 0_U8, wait_failed: 0_U8, exit_status: 0_U8, exit_status_available: 0_U8, stop_signal: 0_U8, stop_signal_available: 0_U8 };
-        let (out, _) = *out.unsafe_mutate_boxed_data_io(|out_ptr|
-            IO::from_runner $ |ios| FFI_CALL_IO[
-                () fixsubprocess_wait_subprocess(I64, F64, Ptr), 
-                pid, -1.0, // No timeout 
-                out_ptr, ios
-            ]
-        ).lift;
+            // Error handling.
+            if worker_res.is_err {
+                pure $ Result::err $ worker_res.as_err
+            };
+            let worker_res = worker_res.as_ok;
 
-        let exit_status = if out.@wait_failed == 1_U8 { 
-            ExitStatus::wait_failed()
-        } else if out.@exit_status_available == 1_U8 {
-            ExitStatus::exit(out.@exit_status)
-        } else if out.@stop_signal_available == 1_U8 {
-            ExitStatus::signaled(out.@stop_signal)
-        } else {
-            ExitStatus::wait_failed()
-        };
-        pure $ (worker_res, exit_status)
-    ))))
+            // Wait for subprocess.
+            let out = WaitResult { is_timeout: 0_U8, wait_failed: 0_U8, exit_status: 0_U8, exit_status_available: 0_U8, stop_signal: 0_U8, stop_signal_available: 0_U8 };
+            let (out, _) = *out.unsafe_mutate_boxed_data_io(|out_ptr|
+                IO::from_runner $ |ios| FFI_CALL_IO[
+                    () fixsubprocess_wait_subprocess(I64, F64, Ptr), 
+                    pid, -1.0, // No timeout 
+                    out_ptr, ios
+                ]
+            );
+
+            let exit_status = if out.@wait_failed == 1_U8 { 
+                ExitStatus::wait_failed()
+            } else if out.@exit_status_available == 1_U8 {
+                ExitStatus::exit(out.@exit_status)
+            } else if out.@stop_signal_available == 1_U8 {
+                ExitStatus::signaled(out.@stop_signal)
+            } else {
+                ExitStatus::wait_failed()
+            };
+            pure $ Result::ok $ (worker_res, exit_status)
+        ))
+    )
 );

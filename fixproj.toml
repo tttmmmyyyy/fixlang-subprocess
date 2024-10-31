@@ -1,6 +1,6 @@
 [general]
 name = "subprocess"
-version = "0.1.3"
+version = "0.1.4"
 
 [build]
 files = ["subprocess.fix"]
