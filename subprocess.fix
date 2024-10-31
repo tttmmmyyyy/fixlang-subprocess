@@ -57,7 +57,7 @@ run_with_stream = |com, args, worker| (
                 // Some error occurred.
                 let msg_ptr = out_error.@(0);
                 let err_msg = String::_unsafe_from_c_str_ptr(msg_ptr);
-                (IO::from_runner $ |io| FFI_CALL_IO[() free(Ptr), msg_ptr, io]);;
+                IO::from_runner(|io| FFI_CALL_IO[() free(Ptr), msg_ptr, io]);;
                 pure $ Result::err $ err_msg
             };
             let handles = (
