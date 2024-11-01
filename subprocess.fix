@@ -49,7 +49,7 @@ run_with_stream = |com, args, worker| (
             let (out_error, (out_files, (out_pid, _))) = *out_error.unsafe_mutate_boxed_data_io(|out_err_ptr|
                 out_files.unsafe_mutate_boxed_data_io(|out_files_ptr|
                     out_pid.unsafe_mutate_boxed_data_io(|out_pid_ptr|
-                        IO::from_runner $ |ios| FFI_CALL_IO[() fixsubprocess_fork_execvp(Ptr, Ptr, Ptr, Ptr, Ptr), com, args, out_err_ptr, out_files_ptr, out_pid_ptr, ios]
+                        IO::from_runner $ |ios| FFI_CALL_IOS[() fixsubprocess_fork_execvp(Ptr, Ptr, Ptr, Ptr, Ptr), com, args, out_err_ptr, out_files_ptr, out_pid_ptr, ios]
                     )
                 )
             );
@@ -57,7 +57,7 @@ run_with_stream = |com, args, worker| (
                 // Some error occurred.
                 let msg_ptr = out_error.@(0);
                 let err_msg = String::_unsafe_from_c_str_ptr(msg_ptr);
-                IO::from_runner(|io| FFI_CALL_IO[() free(Ptr), msg_ptr, io]);;
+                IO::from_runner(|io| FFI_CALL_IOS[() free(Ptr), msg_ptr, io]);;
                 pure $ Result::err $ err_msg
             };
             let handles = (
@@ -80,7 +80,7 @@ run_with_stream = |com, args, worker| (
             // Wait for subprocess.
             let out = WaitResult { is_timeout: 0_U8, wait_failed: 0_U8, exit_status: 0_U8, exit_status_available: 0_U8, stop_signal: 0_U8, stop_signal_available: 0_U8 };
             let (out, _) = *out.unsafe_mutate_boxed_data_io(|out_ptr|
-                IO::from_runner $ |ios| FFI_CALL_IO[
+                IO::from_runner $ |ios| FFI_CALL_IOS[
                     () fixsubprocess_wait_subprocess(I64, F64, Ptr), 
                     pid, -1.0, // No timeout 
                     out_ptr, ios
