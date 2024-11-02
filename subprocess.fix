@@ -46,9 +46,9 @@ run_with_stream = |com, args, worker| (
             let out_error : Array Ptr = Array::empty(1)._unsafe_set_size(1);
             let out_files : Array Ptr = Array::empty(3)._unsafe_set_size(3);
             let out_pid : Array I64 = Array::empty(1)._unsafe_set_size(1);
-            let (out_error, (out_files, (out_pid, _))) = *out_error.unsafe_mutate_boxed_data_io(|out_err_ptr|
-                out_files.unsafe_mutate_boxed_data_io(|out_files_ptr|
-                    out_pid.unsafe_mutate_boxed_data_io(|out_pid_ptr|
+            let (out_error, (out_files, (out_pid, _))) = *out_error.unsafe_mutate_boxed_io(|out_err_ptr|
+                out_files.unsafe_mutate_boxed_io(|out_files_ptr|
+                    out_pid.unsafe_mutate_boxed_io(|out_pid_ptr|
                         IO::from_runner $ |ios| FFI_CALL_IOS[() fixsubprocess_fork_execvp(Ptr, Ptr, Ptr, Ptr, Ptr), com, args, out_err_ptr, out_files_ptr, out_pid_ptr, ios]
                     )
                 )
@@ -79,7 +79,7 @@ run_with_stream = |com, args, worker| (
 
             // Wait for subprocess.
             let out = WaitResult { is_timeout: 0_U8, wait_failed: 0_U8, exit_status: 0_U8, exit_status_available: 0_U8, stop_signal: 0_U8, stop_signal_available: 0_U8 };
-            let (out, _) = *out.unsafe_mutate_boxed_data_io(|out_ptr|
+            let (out, _) = *out.unsafe_mutate_boxed_io(|out_ptr|
                 IO::from_runner $ |ios| FFI_CALL_IOS[
                     () fixsubprocess_wait_subprocess(I64, F64, Ptr), 
                     pid, -1.0, // No timeout 
