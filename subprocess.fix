@@ -39,9 +39,9 @@ type WaitResult = box struct { is_timeout : U8, wait_failed : U8, exit_status : 
 // * `worker : (IOHandle, IOHandle, IOHandle) -> IOFail a` - Receives three `IOHandle`s which are piped to stdin, stdout and stderr of the running command.
 run_with_stream : String -> Array String -> ((IOHandle, IOHandle, IOHandle) -> IOFail a) -> IOFail (a, ExitStatus);
 run_with_stream = |com, args, worker| (
-    IOFail::from_io_result $ args.borrow_ptr_io(|_|
+    IOFail::from_io_result $ args.borrow_boxed_io(|_|
         let arg_ptrs = args.map(_get_c_str).push_back(nullptr);
-        arg_ptrs.borrow_ptr_io(|args| com.@_data.borrow_ptr_io(|com|
+        arg_ptrs.borrow_boxed_io(|args| com.@_data.borrow_boxed_io(|com|
             // Execute command.
             let out_error : Array Ptr = Array::empty(1)._unsafe_set_size(1);
             let out_files : Array Ptr = Array::empty(3)._unsafe_set_size(3);
