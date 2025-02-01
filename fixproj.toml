@@ -1,6 +1,7 @@
 [general]
 name = "subprocess"
 version = "1.0.0"
+description = "Provides a way to run subprocesses."
 
 [build]
 files = ["subprocess.fix"]
