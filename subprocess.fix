@@ -3,6 +3,7 @@ module Subprocess;
 // This type represents the exit status of a subprocess.
 // 
 // This type is the union of following variants:
+// 
 // * `exit : U8` - Means that the subprocess successfully exited (i.e., the main function returned or `exit()` was called) and stores the exit status code.
 // * `signaled : U8` - Means that the subprocess was terminated by a signal and stores the signal number which caused the termination.
 // * `wait_failed : ()` - Means that the `run*` function failed to wait the subprocess to exit.
