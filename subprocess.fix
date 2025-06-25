@@ -19,8 +19,8 @@ type ExitStatus = box union {
 run_string : String -> Array String -> String -> IOFail ((String, String), ExitStatus);
 run_string = |com, args, input| (
     run_with_stream(com, args, |(stdin, stdout, stderr)| (
-        eval *write_string(stdin, input);
-        eval *close_file(stdin).lift; // Send EOF.
+        write_string(stdin, input);;
+        close_file(stdin).lift;; // Send EOF.
         pure $ (*read_string(stdout), *read_string(stderr))
     ))
 );
