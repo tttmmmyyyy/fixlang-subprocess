@@ -1,12 +1,12 @@
 [general]
 name = "subprocess"
-version = "1.0.5"
+version = "1.0.6"
 description = "Provides a way to run subprocesses."
 
 [build]
 files = ["subprocess.fix"]
 objects = ["lib.o"]
-preliminary_commands = [["make", "lib.o"]]
+preliminary_commands = [["make", "-s", "lib.o"]]
 library_paths = ["."]
 
 [build.test]
