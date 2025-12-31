@@ -1,6 +1,6 @@
 [general]
 name = "subprocess"
-version = "1.0.6"
+version = "1.0.7"
 description = "Provides a way to run subprocesses."
 
 [build]

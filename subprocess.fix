@@ -62,9 +62,9 @@ run_with_stream = |com, args, worker| (
                 pure $ Result::err $ err_msg
             };
             let handles = (
-                IOHandle::from_file_ptr(out_files.@(0)),
-                IOHandle::from_file_ptr(out_files.@(1)),
-                IOHandle::from_file_ptr(out_files.@(2))
+                *IOHandle::from_file_ptr(out_files.@(0)),
+                *IOHandle::from_file_ptr(out_files.@(1)),
+                *IOHandle::from_file_ptr(out_files.@(2))
             );
             let pid = out_pid.@(0);
             let worker_res = *worker(handles).to_result;
