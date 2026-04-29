@@ -1,6 +1,11 @@
 module Test;
-import Subprocess;
 
+import Std::{
+    Array, IO, String, U8, Array::{fill, push_back}, Debug::assert_eq, FFI::borrow_boxed_io, 
+    IO::{close_file, exit_with_msg, println, read_string, write_string, IOFail::{lift, try}}, 
+    String::{unsafe_from_c_str_ptr_io, @size}
+};
+import Subprocess::{read_stdout_stderr_concurrent, run_string, run_with_stream, ExitStatus::as_exit};
 test : IO ();
 test = (
     test_ls;;

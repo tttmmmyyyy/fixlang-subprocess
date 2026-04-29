@@ -1,5 +1,16 @@
 module Subprocess;
 
+import Std::{
+    Array, F64, I64, IO, Ptr, String, U8, Array::{empty, fill, push_back, @, @size}, 
+    FFI::{borrow_boxed_io, mutate_boxed_io}, 
+    IO::{
+        close_file, from_runner, IOFail, IOHandle, IOFail::{from_io_result, to_result}, 
+        IOHandle::{from_file_ptr, get_file_ptr}
+    }, 
+    Monad::pure, Result::{as_err, as_ok, err, is_err, ok}, 
+    String::{borrow_c_str_io, unsafe_from_c_str_ptr_io}, Tuple3::{@0, @1, @2}
+};
+
 // This type represents the exit status of a subprocess.
 // 
 // This type is the union of following variants:
