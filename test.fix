@@ -1,71 +1,121 @@
-    module Test;
-    import Subprocess;
+module Test;
+import Subprocess;
 
-    test : IO ();
-    test = (
-        println("Run \"ls -l -r\".");;
-        let (_, exit_status) = *run_with_stream("ls", ["ls", "-l", "-r"], |(stdin, stdout, stderr)| (
-            let output = *read_string(stdout); // Read standard output of the command.
-            println(output).lift
-        )).try(exit_with_msg(1));
-        assert_eq(|_|"", exit_status.as_exit, 0_U8);;
+test : IO ();
+test = (
+    test_ls;;
+    test_sed_with_stdin;;
+    test_run_string_small;;
+    test_large_stderr;;
+    test_large_stdout;;
+    test_large_both_outputs;;
+    test_large_input
+);
 
-        println("Run \"sed s/w/W/\" and write \"Hello world!\" to the standard input.");;
-        let (_, exit_status) = *run_with_stream("sed", ["/usr/bin/sed", "s/w/W/"], |(stdin, stdout, stderr)| (
-            write_string(stdin, "Hello world!");;
-            close_file(stdin).lift;; // Send EOF.
-            let output = *read_string(stdout); // Read standard output of the command.
-            println(output).lift
-        )).try(exit_with_msg(1));
-        assert_eq(|_|"", exit_status.as_exit, 0_U8);;
+// `run_with_stream` over `ls` and read stdout.
+test_ls : IO ();
+test_ls = (
+    println("Run \"ls -l -r\".");;
+    let (_, exit_status) = *run_with_stream("ls", ["ls", "-l", "-r"], |(stdin, stdout, stderr)| (
+        let output = *read_string(stdout);
+        println(output).lift
+    )).try(exit_with_msg(1));
+    assert_eq(|_|"exit status", exit_status.as_exit, 0_U8)
+);
 
-        // Regression test: large stderr (>64 KiB pipe buffer) plus small stdout used to deadlock
-        // because `run_string` drained stdout fully before stderr. The child blocked on stderr
-        // write, the parent on stdout read, and neither could make progress.
-        // We pick 100_000 > 65_536 (Linux default pipe buffer) to exercise the deadlock path.
-        println("Run \"sh -c '...'\" that writes 100_000 bytes to stderr (regression for stderr-overflow deadlock).");;
-        let ((stdout_str, stderr_str), exit_status) = *run_string(
-            "sh",
-            ["sh", "-c", "printf '%*s' 100000 '' 1>&2; echo done"],
-            ""
-        ).try(exit_with_msg(1));
-        assert_eq(|_|"stderr length", stderr_str.@size, 100000);;
-        assert_eq(|_|"stdout length", stdout_str.@size, 5);; // "done\n"
-        assert_eq(|_|"exit status", exit_status.as_exit, 0_U8);;
+// `run_with_stream` over `sed` with input piped through stdin.
+test_sed_with_stdin : IO ();
+test_sed_with_stdin = (
+    println("Run \"sed s/w/W/\" and write \"Hello world!\" to the standard input.");;
+    let (_, exit_status) = *run_with_stream("sed", ["/usr/bin/sed", "s/w/W/"], |(stdin, stdout, stderr)| (
+        write_string(stdin, "Hello world!");;
+        close_file(stdin).lift;; // Send EOF.
+        let output = *read_string(stdout);
+        println(output).lift
+    )).try(exit_with_msg(1));
+    assert_eq(|_|"exit status", exit_status.as_exit, 0_U8)
+);
 
-        // Mirror case: large stdout plus small stderr. Symmetric deadlock if the read order
-        // were reversed; with concurrent reads it must just work.
-        println("Run \"sh -c '...'\" that writes 100_000 bytes to stdout (mirror regression).");;
-        let ((stdout_str, stderr_str), exit_status) = *run_string(
-            "sh",
-            ["sh", "-c", "printf '%*s' 100000 ''; echo err 1>&2"],
-            ""
-        ).try(exit_with_msg(1));
-        assert_eq(|_|"stdout length", stdout_str.@size, 100000);;
-        assert_eq(|_|"stderr length", stderr_str.@size, 4);; // "err\n"
-        assert_eq(|_|"exit status", exit_status.as_exit, 0_U8);;
+// Sanity: small input/output round-trip via `run_string`.
+test_run_string_small : IO ();
+test_run_string_small = (
+    println("Run \"sed s/w/W/\" via run_string with small input.");;
+    let ((stdout_str, stderr_str), exit_status) = *run_string(
+        "sed",
+        ["/usr/bin/sed", "s/w/W/"],
+        "Hello world!"
+    ).try(exit_with_msg(1));
+    assert_eq(|_|"stdout content", stdout_str, "Hello World!");;
+    assert_eq(|_|"stderr content", stderr_str, "");;
+    assert_eq(|_|"exit status", exit_status.as_exit, 0_U8)
+);
 
-        // Both streams large: each exceeds the pipe buffer.
-        println("Run \"sh -c '...'\" that writes 100_000 bytes to both stdout and stderr.");;
-        let ((stdout_str, stderr_str), exit_status) = *run_string(
-            "sh",
-            ["sh", "-c", "printf '%*s' 100000 ''; printf '%*s' 100000 '' 1>&2"],
-            ""
-        ).try(exit_with_msg(1));
-        assert_eq(|_|"stdout length", stdout_str.@size, 100000);;
-        assert_eq(|_|"stderr length", stderr_str.@size, 100000);;
-        assert_eq(|_|"exit status", exit_status.as_exit, 0_U8);;
+// Regression: large stderr (>64 KiB pipe buffer) plus small stdout used to deadlock because
+// `run_string` drained stdout fully before stderr — the child blocked on stderr write, the
+// parent on stdout read. We pick 100_000 > 65_536 (Linux default pipe buffer) to trigger it.
+test_large_stderr : IO ();
+test_large_stderr = (
+    println("Run \"sh -c '...'\" that writes 100_000 bytes to stderr (regression for stderr-overflow deadlock).");;
+    let ((stdout_str, stderr_str), exit_status) = *run_string(
+        "sh",
+        ["sh", "-c", "printf '%*s' 100000 '' 1>&2; echo done"],
+        ""
+    ).try(exit_with_msg(1));
+    assert_eq(|_|"stderr length", stderr_str.@size, 100000);;
+    assert_eq(|_|"stdout length", stdout_str.@size, 5);; // "done\n"
+    assert_eq(|_|"exit status", exit_status.as_exit, 0_U8)
+);
 
-        // Sanity: small input/output via run_string still works.
-        println("Run \"sed s/w/W/\" via run_string with small input.");;
-        let ((stdout_str, stderr_str), exit_status) = *run_string(
-            "sed",
-            ["/usr/bin/sed", "s/w/W/"],
-            "Hello world!"
-        ).try(exit_with_msg(1));
-        assert_eq(|_|"stdout content", stdout_str, "Hello World!");;
-        assert_eq(|_|"stderr content", stderr_str, "");;
-        assert_eq(|_|"exit status", exit_status.as_exit, 0_U8);;
+// Mirror of `test_large_stderr`: large stdout plus small stderr. Symmetric deadlock if the
+// read order were reversed; with concurrent reads it must just work.
+test_large_stdout : IO ();
+test_large_stdout = (
+    println("Run \"sh -c '...'\" that writes 100_000 bytes to stdout (mirror regression).");;
+    let ((stdout_str, stderr_str), exit_status) = *run_string(
+        "sh",
+        ["sh", "-c", "printf '%*s' 100000 ''; echo err 1>&2"],
+        ""
+    ).try(exit_with_msg(1));
+    assert_eq(|_|"stdout length", stdout_str.@size, 100000);;
+    assert_eq(|_|"stderr length", stderr_str.@size, 4);; // "err\n"
+    assert_eq(|_|"exit status", exit_status.as_exit, 0_U8)
+);
 
-        pure()
-    );
+// Both streams large: each one exceeds the pipe buffer.
+test_large_both_outputs : IO ();
+test_large_both_outputs = (
+    println("Run \"sh -c '...'\" that writes 100_000 bytes to both stdout and stderr.");;
+    let ((stdout_str, stderr_str), exit_status) = *run_string(
+        "sh",
+        ["sh", "-c", "printf '%*s' 100000 ''; printf '%*s' 100000 '' 1>&2"],
+        ""
+    ).try(exit_with_msg(1));
+    assert_eq(|_|"stdout length", stdout_str.@size, 100000);;
+    assert_eq(|_|"stderr length", stderr_str.@size, 100000);;
+    assert_eq(|_|"exit status", exit_status.as_exit, 0_U8)
+);
+
+// Regression: large input combined with the child writing large output BEFORE consuming its
+// stdin. `run_string` writes the input synchronously and only then reads the output, so the
+// parent fills the stdin pipe (blocks on `write`) while the child fills its stdout pipe (also
+// blocks on `write`) before getting to read stdin.
+// Concrete shell: child writes 70_000 bytes to stdout (> 64 KiB pipe buffer) and only then
+// `cat`s its stdin; parent feeds 70_000 bytes of 'x' as input (also > 64 KiB).
+test_large_input : IO ();
+test_large_input = (
+    println("Run with 70_000 B of input, child writes 70_000 B to stdout BEFORE reading stdin (regression for stdin-overflow deadlock).");;
+    // Build a 70_000-byte 'x' string via `Array::fill` (intrinsic, O(n)) and the IO version of
+    // `unsafe_from_c_str_ptr` (the non-IO version is not safely sequenced with respect to GC).
+    // A doubling-concatenation construction works under release builds but its deeply nested
+    // call structure overflows the stack under `debug = true` (`-O none`).
+    let bytes : Array U8 = Array::fill(70000, 'x').push_back('\0');
+    let large_input : String = *bytes.borrow_boxed_io(unsafe_from_c_str_ptr_io);
+    let ((stdout_str, stderr_str), exit_status) = *run_string(
+        "sh",
+        ["sh", "-c", "printf '%*s' 70000 ''; cat"],
+        large_input
+    ).try(exit_with_msg(1));
+    assert_eq(|_|"stdout length", stdout_str.@size, 140000);; // 70_000 spaces + 70_000 'x'
+    assert_eq(|_|"stderr length", stderr_str.@size, 0);;
+    assert_eq(|_|"exit status", exit_status.as_exit, 0_U8)
+);

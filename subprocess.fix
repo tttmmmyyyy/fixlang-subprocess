@@ -19,9 +19,15 @@ type ExitStatus = box union {
 run_string : String -> Array String -> String -> IOFail ((String, String), ExitStatus);
 run_string = |com, args, input| (
     run_with_stream(com, args, |(stdin, stdout, stderr)| (
-        write_string(stdin, input);;
-        close_file(stdin).lift;; // Send EOF.
-        read_stdout_stderr_concurrent(stdout, stderr)
+        IOFail::from_io_result $ do {
+            let in_fp = *stdin.get_file_ptr;
+            let out_fp = *stdout.get_file_ptr;
+            let err_fp = *stderr.get_file_ptr;
+            if in_fp == nullptr || out_fp == nullptr || err_fp == nullptr {
+                pure $ Result::err("`run_string` failed!: an IOHandle is already closed.")
+            };
+            _drive_io(in_fp, input, out_fp, err_fp).to_result
+        }
     ))
 );
 
@@ -41,7 +47,8 @@ run_string = |com, args, input| (
 // ))
 // ```
 //
-// (`run_string` already does exactly this internally.)
+// (`run_string` already drives all three pipes concurrently — including the input write —
+// so worker code is not even necessary in the typical case.)
 //
 // # Parameters
 //
@@ -55,7 +62,21 @@ read_stdout_stderr_concurrent = |out_handle, err_handle| (
         if out_fp == nullptr || err_fp == nullptr {
             pure $ Result::err("`read_stdout_stderr_concurrent` failed!: an IOHandle is already closed.")
         };
+        // Pass `nullptr` for stdin to signal "no input, do not drive the stdin pipe". The
+        // `input` argument is then ignored, but we still need a valid `String` here.
+        _drive_io(nullptr, "", out_fp, err_fp).to_result
+    }
+);
 
+// Internal: calls `fixsubprocess_drive_io` and turns the returned malloc'd buffers into Fix
+// `String`s.
+//
+// `in_fp = nullptr` means "do not write to or close stdin" (drain-only mode), and `input` is
+// then ignored. Otherwise this helper writes `input` to `in_fp` while concurrently draining
+// stdout and stderr, and closes `in_fp` (sends EOF) once the input is fully written.
+_drive_io : Ptr -> String -> Ptr -> Ptr -> IOFail (String, String);
+_drive_io = |in_fp, input, out_fp, err_fp| (
+    IOFail::from_io_result $ input.borrow_c_str_io(|input_ptr| do {
         let out_error : Array Ptr = Array::fill(1, nullptr);
         let out_buf : Array Ptr = Array::fill(1, nullptr);
         let err_buf : Array Ptr = Array::fill(1, nullptr);
@@ -65,8 +86,8 @@ read_stdout_stderr_concurrent = |out_handle, err_handle| (
                 out_buf.mutate_boxed_io(|out_buf_ptr|
                     err_buf.mutate_boxed_io(|err_buf_ptr|
                         IO::from_runner $ |ios| FFI_CALL_IOS[
-                            I64 fixsubprocess_read_stdout_stderr(Ptr, Ptr, Ptr, Ptr, Ptr),
-                            out_fp, err_fp, out_buf_ptr, err_buf_ptr, out_error_ptr, ios
+                            I64 fixsubprocess_drive_io(Ptr, Ptr, Ptr, Ptr, Ptr, Ptr, Ptr),
+                            in_fp, input_ptr, out_fp, err_fp, out_buf_ptr, err_buf_ptr, out_error_ptr, ios
                         ]
                     )
                 )
@@ -75,7 +96,7 @@ read_stdout_stderr_concurrent = |out_handle, err_handle| (
 
         if ret != 0 {
             let msg_ptr = out_error.@(0);
-            let err_msg = String::unsafe_from_c_str_ptr(msg_ptr);
+            let err_msg = *String::unsafe_from_c_str_ptr_io(msg_ptr);
             IO::from_runner(|io| FFI_CALL_IOS[() free(Ptr), msg_ptr, io]);;
             pure $ Result::err $ err_msg
         };
@@ -88,7 +109,7 @@ read_stdout_stderr_concurrent = |out_handle, err_handle| (
         IO::from_runner(|io| FFI_CALL_IOS[() free(Ptr), err_buf_ptr, io]);;
 
         pure $ Result::ok $ (out_str, err_str)
-    }
+    })
 );
 
 // Result of `fixsubprocess_wait_subprocess`.
@@ -135,7 +156,7 @@ run_with_stream = |com, args, worker| (
             if out_error.@(0) != nullptr {
                 // Some error occurred.
                 let msg_ptr = out_error.@(0);
-                let err_msg = String::unsafe_from_c_str_ptr(msg_ptr);
+                let err_msg = *String::unsafe_from_c_str_ptr_io(msg_ptr);
                 IO::from_runner(|io| FFI_CALL_IOS[() free(Ptr), msg_ptr, io]);;
                 pure $ Result::err $ err_msg
             };

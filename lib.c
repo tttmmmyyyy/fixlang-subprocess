@@ -8,6 +8,8 @@
 #include <string.h>
 #include <poll.h>
 #include <errno.h>
+#include <fcntl.h>
+#include <signal.h>
 
 // Fork child process and launch process by execvp.
 // * `error_buf` - If no error occurrs, error_buf will be set to pointing NULL.
@@ -161,17 +163,39 @@ void fixsubprocess_wait_subprocess(int64_t pid, double timeout,
     }
 }
 
-// Reads all bytes from `out_fp` (child stdout) and `err_fp` (child stderr) concurrently using `poll(2)`.
-// This avoids the classic pipe-buffer deadlock that occurs when the two streams are drained sequentially:
-// if the child writes more than the pipe-buffer capacity (64 KiB on Linux by default) to the stream
-// the parent has not started reading yet, the child blocks on `write` and the parent blocks on `read`.
+// Sets a malloc'd error message and frees the two stdout/stderr buffers. Helper for the
+// error paths in `fixsubprocess_drive_io`.
+static void drive_io_set_error(const char *msg, char **out_error, char *bufs[2])
+{
+    *out_error = (char *)malloc(strlen(msg) + 1);
+    if (*out_error != NULL) strcpy(*out_error, msg);
+    free(bufs[0]);
+    free(bufs[1]);
+}
+
+// Drives the three pipes (`in_fp`, `out_fp`, `err_fp`) of a child process concurrently with
+// `poll(2)`: writes `input` to stdin, drains stdout and stderr, and closes stdin (sends EOF)
+// once the input has been fully written. Avoids both stdout/stderr-overflow and stdin-overflow
+// deadlocks that arise when these are done sequentially.
+//
+// If `in_fp` is NULL, stdin is not driven (and `input` / `input_len` are ignored). This makes
+// the function usable as a pure stdout/stderr drain too — see `read_stdout_stderr_concurrent`.
 //
 // On success returns 0 and writes malloc'd, NUL-terminated buffers to `*out_buf` / `*err_buf`
 // (caller frees with `free`).
 //
 // On failure returns -1 and writes a malloc'd NUL-terminated error message to `*out_error`
 // (caller frees). `*out_buf` and `*err_buf` are set to NULL on failure.
-int64_t fixsubprocess_read_stdout_stderr(
+//
+// `in_fp` is closed by this function via `close(fileno(in_fp))` once the input is fully written
+// (or up front if the input is empty). The caller's later `fclose(in_fp)` is safe because nothing
+// has been written through the FILE* (its stdio buffer is empty), so the fclose-time `close(fd)`
+// just returns EBADF and is ignored.
+//
+// `input` is treated as a NUL-terminated C string. Pass NULL (and pass NULL for `in_fp`) to skip
+// stdin handling entirely.
+int64_t fixsubprocess_drive_io(
+    FILE *in_fp, const char *input,
     FILE *out_fp, FILE *err_fp,
     char **out_buf, char **err_buf,
     char **out_error)
@@ -180,27 +204,63 @@ int64_t fixsubprocess_read_stdout_stderr(
     *err_buf = NULL;
     *out_error = NULL;
 
-    int fds[2] = {fileno(out_fp), fileno(err_fp)};
+    // Avoid SIGPIPE killing the process if the child closes stdin early. We get EPIPE on
+    // `write` instead.
+    signal(SIGPIPE, SIG_IGN);
+
+    int read_fds[2] = {fileno(out_fp), fileno(err_fp)};
     char *bufs[2] = {NULL, NULL};
     size_t lens[2] = {0, 0};
     size_t caps[2] = {0, 0};
-    int done[2] = {0, 0};
+    int read_done[2] = {0, 0};
+
+    int64_t input_len = (input != NULL) ? (int64_t)strlen(input) : 0;
+    int in_fd = -1;
+    int64_t in_written = 0;
+    int in_done = 1;
+    if (in_fp != NULL && input_len > 0)
+    {
+        in_fd = fileno(in_fp);
+        // Make stdin writes non-blocking so a `write` returning short under POLLOUT doesn't stall
+        // the loop on the next iteration.
+        int flags = fcntl(in_fd, F_GETFL, 0);
+        if (flags >= 0)
+        {
+            fcntl(in_fd, F_SETFL, flags | O_NONBLOCK);
+        }
+        in_done = 0;
+    }
+    else if (in_fp != NULL)
+    {
+        // Empty input (or NULL `input`): close stdin immediately so the child sees EOF.
+        close(fileno(in_fp));
+    }
 
     const size_t CHUNK = 4096;
 
-    while (!done[0] || !done[1])
+    while (!in_done || !read_done[0] || !read_done[1])
     {
-        struct pollfd pfds[2];
-        int idx_map[2] = {-1, -1};
+        struct pollfd pfds[3];
+        // Encoding: 0 = stdin write, 1 = stdout read, 2 = stderr read.
+        int kind_map[3] = {-1, -1, -1};
         nfds_t nfds = 0;
+
+        if (!in_done)
+        {
+            pfds[nfds].fd = in_fd;
+            pfds[nfds].events = POLLOUT;
+            pfds[nfds].revents = 0;
+            kind_map[nfds] = 0;
+            nfds++;
+        }
         for (int i = 0; i < 2; i++)
         {
-            if (!done[i])
+            if (!read_done[i])
             {
-                pfds[nfds].fd = fds[i];
+                pfds[nfds].fd = read_fds[i];
                 pfds[nfds].events = POLLIN;
                 pfds[nfds].revents = 0;
-                idx_map[nfds] = i;
+                kind_map[nfds] = i + 1;
                 nfds++;
             }
         }
@@ -208,64 +268,102 @@ int64_t fixsubprocess_read_stdout_stderr(
         int pret = poll(pfds, nfds, -1);
         if (pret < 0)
         {
-            if (errno == EINTR)
-                continue;
-            const char *msg = "poll() failed while reading subprocess stdout/stderr.";
-            *out_error = (char *)malloc(strlen(msg) + 1);
-            strcpy(*out_error, msg);
-            free(bufs[0]);
-            free(bufs[1]);
+            if (errno == EINTR) continue;
+            drive_io_set_error("poll() failed in fixsubprocess_drive_io.", out_error, bufs);
+            if (!in_done) close(in_fd);
             return -1;
         }
 
         for (nfds_t j = 0; j < nfds; j++)
         {
-            int i = idx_map[j];
-            if (pfds[j].revents & (POLLIN | POLLHUP | POLLERR))
+            int kind = kind_map[j];
+            short revents = pfds[j].revents;
+
+            if (kind == 0)
             {
-                if (lens[i] + CHUNK + 1 > caps[i])
+                // stdin write
+                if (revents & (POLLOUT | POLLHUP | POLLERR))
                 {
-                    size_t new_cap = caps[i] == 0 ? (CHUNK * 2) : caps[i] * 2;
-                    while (new_cap < lens[i] + CHUNK + 1)
-                        new_cap *= 2;
-                    char *new_buf = (char *)realloc(bufs[i], new_cap);
-                    if (new_buf == NULL)
+                    int64_t remain = input_len - in_written;
+                    size_t to_write = (remain < (int64_t)CHUNK) ? (size_t)remain : CHUNK;
+                    ssize_t n = write(in_fd, input + in_written, to_write);
+                    if (n > 0)
                     {
-                        const char *msg = "Out of memory while reading subprocess stdout/stderr.";
-                        *out_error = (char *)malloc(strlen(msg) + 1);
-                        strcpy(*out_error, msg);
-                        free(bufs[0]);
-                        free(bufs[1]);
-                        return -1;
+                        in_written += (int64_t)n;
+                        if (in_written >= input_len)
+                        {
+                            close(in_fd);
+                            in_done = 1;
+                        }
                     }
-                    bufs[i] = new_buf;
-                    caps[i] = new_cap;
+                    else if (n < 0)
+                    {
+                        if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)
+                        {
+                            // Try again next poll cycle.
+                        }
+                        else if (errno == EPIPE)
+                        {
+                            // Child closed its stdin early. Stop writing but keep draining.
+                            close(in_fd);
+                            in_done = 1;
+                        }
+                        else
+                        {
+                            drive_io_set_error("write() failed in fixsubprocess_drive_io.", out_error, bufs);
+                            close(in_fd);
+                            return -1;
+                        }
+                    }
                 }
-                ssize_t n = read(fds[i], bufs[i] + lens[i], CHUNK);
-                if (n > 0)
+            }
+            else
+            {
+                int i = kind - 1; // 0 = stdout, 1 = stderr
+                if (revents & (POLLIN | POLLHUP | POLLERR))
                 {
-                    lens[i] += (size_t)n;
-                }
-                else if (n == 0)
-                {
-                    done[i] = 1;
-                }
-                else
-                {
-                    if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)
-                        continue;
-                    const char *msg = "read() failed while reading subprocess stdout/stderr.";
-                    *out_error = (char *)malloc(strlen(msg) + 1);
-                    strcpy(*out_error, msg);
-                    free(bufs[0]);
-                    free(bufs[1]);
-                    return -1;
+                    if (lens[i] + CHUNK + 1 > caps[i])
+                    {
+                        size_t new_cap = caps[i] == 0 ? (CHUNK * 2) : caps[i] * 2;
+                        while (new_cap < lens[i] + CHUNK + 1) new_cap *= 2;
+                        char *new_buf = (char *)realloc(bufs[i], new_cap);
+                        if (new_buf == NULL)
+                        {
+                            drive_io_set_error("Out of memory in fixsubprocess_drive_io.", out_error, bufs);
+                            if (!in_done) close(in_fd);
+                            return -1;
+                        }
+                        bufs[i] = new_buf;
+                        caps[i] = new_cap;
+                    }
+                    ssize_t n = read(read_fds[i], bufs[i] + lens[i], CHUNK);
+                    if (n > 0)
+                    {
+                        lens[i] += (size_t)n;
+                    }
+                    else if (n == 0)
+                    {
+                        read_done[i] = 1;
+                    }
+                    else
+                    {
+                        if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)
+                        {
+                            // Try again next poll cycle.
+                        }
+                        else
+                        {
+                            drive_io_set_error("read() failed in fixsubprocess_drive_io.", out_error, bufs);
+                            if (!in_done) close(in_fd);
+                            return -1;
+                        }
+                    }
                 }
             }
         }
     }
 
-    // Ensure each buffer has room for a trailing NUL.
+    // NUL-terminate each buffer for convenience.
     for (int i = 0; i < 2; i++)
     {
         if (caps[i] == 0)
@@ -273,10 +371,7 @@ int64_t fixsubprocess_read_stdout_stderr(
             bufs[i] = (char *)malloc(1);
             if (bufs[i] == NULL)
             {
-                const char *msg = "Out of memory while finalizing subprocess output buffer.";
-                *out_error = (char *)malloc(strlen(msg) + 1);
-                strcpy(*out_error, msg);
-                free(bufs[1 - i]);
+                drive_io_set_error("Out of memory while finalizing subprocess output buffer.", out_error, bufs);
                 return -1;
             }
             caps[i] = 1;
@@ -286,11 +381,7 @@ int64_t fixsubprocess_read_stdout_stderr(
             char *new_buf = (char *)realloc(bufs[i], lens[i] + 1);
             if (new_buf == NULL)
             {
-                const char *msg = "Out of memory while finalizing subprocess output buffer.";
-                *out_error = (char *)malloc(strlen(msg) + 1);
-                strcpy(*out_error, msg);
-                free(bufs[0]);
-                free(bufs[1]);
+                drive_io_set_error("Out of memory while finalizing subprocess output buffer.", out_error, bufs);
                 return -1;
             }
             bufs[i] = new_buf;
