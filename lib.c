@@ -12,10 +12,13 @@
 #include <signal.h>
 #include <pthread.h>
 
-// Fork child process and launch process by execvp.
-// * `error_buf` - If no error occurrs, error_buf will be set to pointing NULL.
-//                 Otherwise, error_buf will be set to pointing to null-terminated error string. In this case, the caller should free the string buffer.
-// * `streams` - If succceeds, streams[0], streams[1] and streams[2] are set FILE handles that are piped to stdio, stdout and stderr of child process.
+// Forks a child process and launches `program_path` via `execvp`.
+//
+// * `out_error` - On success `*out_error` is set to NULL. On failure it is set to a malloc'd,
+//                 NUL-terminated error message; the caller is responsible for freeing it.
+// * `out_streams` - On success `out_streams[0..3]` are set to FILE handles piped to the child's
+//                   stdin, stdout, and stderr respectively.
+// * `out_pid` - On success `*out_pid` is set to the child's process id.
 void fixsubprocess_fork_execvp(const char *program_path, char *const argv[], char **out_error, FILE *out_streams[], int64_t *out_pid)
 {
     *out_error = NULL;
@@ -97,14 +100,15 @@ typedef struct
     uint8_t stop_signal_available;
 } WaitResult;
 
-// Wait termination of child process specified.
-// * `timeout` - Positive for timeout value (in seconds), negative for no timeout.
-// * `out_is_timeout` - Set to 1 when return by timeout, or set to 0 otherwise. Should not be NULL when `timeout` is not NULL.
-// * `out_wait_failed` - Set to 1 when waiting child process failed, or set to 0 otherwise.
-// * `out_exit_status` - The exit status of child process is stored to the address specified this argument. This value should be used only when `*out_exit_status_available == 1`.
-// * `out_exit_status_available` - Set to 1 when exit status is available, or set to 0 otherwise.
-// * `out_stop_signal` - The signal number which caused the termination of the child process. This value should be used only when `*out_stop_signal_available == 1`.
-// * `out_stop_signal_available` - Set to 1 when the stop signal number is available, or set to 0 otherwise.
+// Waits for the child process `pid` to terminate (or until `timeout` seconds elapse).
+//
+// * `pid` - The child's process id.
+// * `timeout` - Non-negative seconds before giving up, or negative to wait indefinitely.
+// * `out` - Result struct, all fields written. Fields are mutually exclusive flags / values:
+//     - `is_timeout = 1` if we returned because `timeout` elapsed.
+//     - `wait_failed = 1` if `waitpid` itself returned an error.
+//     - `exit_status_available = 1` and `exit_status = WEXITSTATUS(...)` if the child exited normally.
+//     - `stop_signal_available = 1` and `stop_signal = WSTOPSIG(...)` if the child was killed by a signal.
 void fixsubprocess_wait_subprocess(int64_t pid, double timeout,
                                    WaitResult *out)
 {
@@ -179,8 +183,8 @@ static void drive_io_set_error(const char *msg, char **out_error, char *bufs[2])
 // once the input has been fully written. Avoids both stdout/stderr-overflow and stdin-overflow
 // deadlocks that arise when these are done sequentially.
 //
-// If `in_fp` is NULL, stdin is not driven (and `input` / `input_len` are ignored). This makes
-// the function usable as a pure stdout/stderr drain too — see `read_stdout_stderr_concurrent`.
+// If `in_fp` is NULL, stdin is not driven (and `input` is ignored). This makes the function
+// usable as a pure stdout/stderr drain too — see `read_stdout_stderr_concurrent`.
 //
 // On success returns 0 and writes malloc'd, NUL-terminated buffers to `*out_buf` / `*err_buf`
 // (caller frees with `free`).
@@ -273,8 +277,8 @@ int64_t fixsubprocess_drive_io(
             }
         }
 
-        int pret = poll(pfds, nfds, -1);
-        if (pret < 0)
+        int n_ready = poll(pfds, nfds, -1);
+        if (n_ready < 0)
         {
             if (errno == EINTR) continue;
             drive_io_set_error("poll() failed in fixsubprocess_drive_io.", out_error, bufs);
