@@ -132,6 +132,36 @@ _drive_io = |in_fp, input, out_fp, err_fp| (
     })
 );
 
+// Borrows each `String` in `strs` as a NUL-terminated C string and calls `action` with the
+// resulting `Array Ptr` (one entry per element, in order). Each `String` is kept retained for
+// the entire scope of `action`, so the pointers are guaranteed not to dangle. This is the
+// multi-string analogue of `Std::String::borrow_c_str_io`.
+//
+// Implemented by recursively nesting `borrow_c_str_io` calls (one per element), so each
+// element's borrow scope strictly contains `action`'s scope.
+//
+// # Parameters
+//
+// * `action` - The IO action to run with the array of borrowed C pointers.
+// * `strs` - The strings whose C representations should be borrowed.
+_borrow_c_strs_io : (Array Ptr -> IO a) -> Array String -> IO a;
+_borrow_c_strs_io = |action, strs| (
+    _borrow_c_strs_io_loop(strs, 0, Array::empty(strs.@size), action)
+);
+
+// Helper for `_borrow_c_strs_io`: recursively borrows `strs[idx..]`, accumulating the C
+// pointers into `acc`, and finally calls `action` with the full array.
+_borrow_c_strs_io_loop : Array String -> I64 -> Array Ptr -> (Array Ptr -> IO a) -> IO a;
+_borrow_c_strs_io_loop = |strs, idx, acc, action| (
+    if idx == strs.@size {
+        action(acc)
+    } else {
+        strs.@(idx).borrow_c_str_io(|p|
+            _borrow_c_strs_io_loop(strs, idx + 1, acc.push_back(p), action)
+        )
+    }
+);
+
 // Result of `fixsubprocess_wait_subprocess`.
 // 
 // This struct is used in the internal implementation.
@@ -161,9 +191,9 @@ type WaitResult = box struct { is_timeout : U8, wait_failed : U8, exit_status : 
 // * `worker` - Receives three `IOHandle`s which are piped to stdin, stdout and stderr of the running command.
 run_with_stream : String -> Array String -> ((IOHandle, IOHandle, IOHandle) -> IOFail a) -> IOFail (a, ExitStatus);
 run_with_stream = |com, args, worker| (
-    IOFail::from_io_result $ args.borrow_boxed_io(|_|
-        let arg_ptrs = args.map(_get_c_str).push_back(nullptr);
-        arg_ptrs.borrow_boxed_io(|args| com.@_data.borrow_boxed_io(|com|
+    IOFail::from_io_result $ args._borrow_c_strs_io(|arg_ptrs|
+        let arg_ptrs = arg_ptrs.push_back(nullptr); // execvp expects a NULL-terminated argv.
+        arg_ptrs.borrow_boxed_io(|argv_ptr| com.borrow_c_str_io(|com_ptr|
             // Execute command.
             let out_error : Array Ptr = Array::fill(1, nullptr);
             let out_files : Array Ptr = Array::fill(3, nullptr);
@@ -171,7 +201,7 @@ run_with_stream = |com, args, worker| (
             let (out_error, (out_files, (out_pid, _))) = *out_error.mutate_boxed_io(|out_err_ptr|
                 out_files.mutate_boxed_io(|out_files_ptr|
                     out_pid.mutate_boxed_io(|out_pid_ptr|
-                        IO::from_runner $ |ios| FFI_CALL_IOS[() fixsubprocess_fork_execvp(Ptr, Ptr, Ptr, Ptr, Ptr), com, args, out_err_ptr, out_files_ptr, out_pid_ptr, ios]
+                        IO::from_runner $ |ios| FFI_CALL_IOS[() fixsubprocess_fork_execvp(Ptr, Ptr, Ptr, Ptr, Ptr), com_ptr, argv_ptr, out_err_ptr, out_files_ptr, out_pid_ptr, ios]
                     )
                 )
             );
