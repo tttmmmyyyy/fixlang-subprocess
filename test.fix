@@ -6,6 +6,11 @@ test = (
     test_ls;;
     test_sed_with_stdin;;
     test_run_string_small;;
+    test_empty_input;;
+    test_round_trip;;
+    test_nonzero_exit;;
+    test_read_stdout_stderr_concurrent;;
+    test_child_stdin_unused;;
     test_large_stderr;;
     test_large_stdout;;
     test_large_both_outputs;;
@@ -47,6 +52,74 @@ test_run_string_small = (
     ).try(exit_with_msg(1));
     assert_eq(|_|"stdout content", stdout_str, "Hello World!");;
     assert_eq(|_|"stderr content", stderr_str, "");;
+    assert_eq(|_|"exit status", exit_status.as_exit, 0_U8)
+);
+
+// Empty input: exercises the C-side branch that closes stdin immediately on `input_len == 0`.
+test_empty_input : IO ();
+test_empty_input = (
+    println("Run \"cat\" via run_string with empty input.");;
+    let ((stdout_str, stderr_str), exit_status) = *run_string(
+        "cat", ["cat"], ""
+    ).try(exit_with_msg(1));
+    assert_eq(|_|"stdout content", stdout_str, "");;
+    assert_eq(|_|"stderr content", stderr_str, "");;
+    assert_eq(|_|"exit status", exit_status.as_exit, 0_U8)
+);
+
+// Data integrity round-trip: `cat` should hand back the input verbatim.
+test_round_trip : IO ();
+test_round_trip = (
+    println("Round-trip 100_000 B through cat (data integrity check).");;
+    let bytes : Array U8 = Array::fill(100000, 'a').push_back('\0');
+    let input : String = *bytes.borrow_boxed_io(unsafe_from_c_str_ptr_io);
+    let ((stdout_str, stderr_str), exit_status) = *run_string(
+        "cat", ["cat"], input
+    ).try(exit_with_msg(1));
+    assert_eq(|_|"stdout matches input", stdout_str, input);;
+    assert_eq(|_|"stderr empty", stderr_str, "");;
+    assert_eq(|_|"exit status", exit_status.as_exit, 0_U8)
+);
+
+// Non-zero ExitStatus: ensure `as_exit` round-trips a specific value.
+test_nonzero_exit : IO ();
+test_nonzero_exit = (
+    println("Run \"sh -c 'exit 42'\" and check ExitStatus.");;
+    let (_, exit_status) = *run_string(
+        "sh", ["sh", "-c", "exit 42"], ""
+    ).try(exit_with_msg(1));
+    assert_eq(|_|"exit status is 42", exit_status.as_exit, 42_U8)
+);
+
+// Direct test of `read_stdout_stderr_concurrent` from a `run_with_stream` worker.
+test_read_stdout_stderr_concurrent : IO ();
+test_read_stdout_stderr_concurrent = (
+    println("Use read_stdout_stderr_concurrent from a run_with_stream worker.");;
+    let ((out, err), exit_status) = *run_with_stream(
+        "sh",
+        ["sh", "-c", "echo to_out; echo to_err 1>&2"],
+        |(stdin, stdout, stderr)| (
+            close_file(stdin).lift;; // No input; send EOF.
+            read_stdout_stderr_concurrent(stdout, stderr)
+        )
+    ).try(exit_with_msg(1));
+    assert_eq(|_|"stdout content", out, "to_out\n");;
+    assert_eq(|_|"stderr content", err, "to_err\n");;
+    assert_eq(|_|"exit status", exit_status.as_exit, 0_U8)
+);
+
+// EPIPE path: child exits without ever reading its stdin while the parent is still feeding it.
+// `true` ignores stdin entirely. Without SIGPIPE handling this would kill the parent on `write`.
+test_child_stdin_unused : IO ();
+test_child_stdin_unused = (
+    println("Run \"true\" with 70_000 B of input it never reads (EPIPE path).");;
+    let bytes : Array U8 = Array::fill(70000, 'x').push_back('\0');
+    let input : String = *bytes.borrow_boxed_io(unsafe_from_c_str_ptr_io);
+    let ((stdout_str, stderr_str), exit_status) = *run_string(
+        "true", ["true"], input
+    ).try(exit_with_msg(1));
+    assert_eq(|_|"stdout empty", stdout_str, "");;
+    assert_eq(|_|"stderr empty", stderr_str, "");;
     assert_eq(|_|"exit status", exit_status.as_exit, 0_U8)
 );
 

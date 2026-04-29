@@ -10,6 +10,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <signal.h>
+#include <pthread.h>
 
 // Fork child process and launch process by execvp.
 // * `error_buf` - If no error occurrs, error_buf will be set to pointing NULL.
@@ -204,9 +205,15 @@ int64_t fixsubprocess_drive_io(
     *err_buf = NULL;
     *out_error = NULL;
 
-    // Avoid SIGPIPE killing the process if the child closes stdin early. We get EPIPE on
-    // `write` instead.
-    signal(SIGPIPE, SIG_IGN);
+    int64_t rc = -1;
+
+    // Block SIGPIPE on this thread for the duration of the call: an early child stdin close
+    // should turn into EPIPE on `write`, not into a process-wide signal. Use pthread_sigmask
+    // (not `signal`) so we don't mutate the process-wide handler that other code may rely on.
+    sigset_t sigpipe_set, old_sigmask;
+    sigemptyset(&sigpipe_set);
+    sigaddset(&sigpipe_set, SIGPIPE);
+    int sigmask_saved = (pthread_sigmask(SIG_BLOCK, &sigpipe_set, &old_sigmask) == 0);
 
     int read_fds[2] = {fileno(out_fp), fileno(err_fp)};
     char *bufs[2] = {NULL, NULL};
@@ -218,22 +225,23 @@ int64_t fixsubprocess_drive_io(
     int in_fd = -1;
     int64_t in_written = 0;
     int in_done = 1;
-    if (in_fp != NULL && input_len > 0)
+    if (in_fp != NULL)
     {
         in_fd = fileno(in_fp);
-        // Make stdin writes non-blocking so a `write` returning short under POLLOUT doesn't stall
-        // the loop on the next iteration.
-        int flags = fcntl(in_fd, F_GETFL, 0);
-        if (flags >= 0)
+        if (input_len > 0)
         {
-            fcntl(in_fd, F_SETFL, flags | O_NONBLOCK);
+            // Make stdin writes non-blocking so a `write` returning short under POLLOUT doesn't
+            // stall the loop on the next iteration.
+            int flags = fcntl(in_fd, F_GETFL, 0);
+            if (flags >= 0) fcntl(in_fd, F_SETFL, flags | O_NONBLOCK);
+            in_done = 0;
         }
-        in_done = 0;
-    }
-    else if (in_fp != NULL)
-    {
-        // Empty input (or NULL `input`): close stdin immediately so the child sees EOF.
-        close(fileno(in_fp));
+        else
+        {
+            // Empty input (or NULL `input`): close stdin immediately so the child sees EOF.
+            close(in_fd);
+            in_fd = -1;
+        }
     }
 
     const size_t CHUNK = 4096;
@@ -270,8 +278,7 @@ int64_t fixsubprocess_drive_io(
         {
             if (errno == EINTR) continue;
             drive_io_set_error("poll() failed in fixsubprocess_drive_io.", out_error, bufs);
-            if (!in_done) close(in_fd);
-            return -1;
+            goto cleanup;
         }
 
         for (nfds_t j = 0; j < nfds; j++)
@@ -293,6 +300,7 @@ int64_t fixsubprocess_drive_io(
                         if (in_written >= input_len)
                         {
                             close(in_fd);
+                            in_fd = -1;
                             in_done = 1;
                         }
                     }
@@ -306,13 +314,13 @@ int64_t fixsubprocess_drive_io(
                         {
                             // Child closed its stdin early. Stop writing but keep draining.
                             close(in_fd);
+                            in_fd = -1;
                             in_done = 1;
                         }
                         else
                         {
                             drive_io_set_error("write() failed in fixsubprocess_drive_io.", out_error, bufs);
-                            close(in_fd);
-                            return -1;
+                            goto cleanup;
                         }
                     }
                 }
@@ -330,8 +338,7 @@ int64_t fixsubprocess_drive_io(
                         if (new_buf == NULL)
                         {
                             drive_io_set_error("Out of memory in fixsubprocess_drive_io.", out_error, bufs);
-                            if (!in_done) close(in_fd);
-                            return -1;
+                            goto cleanup;
                         }
                         bufs[i] = new_buf;
                         caps[i] = new_cap;
@@ -354,8 +361,7 @@ int64_t fixsubprocess_drive_io(
                         else
                         {
                             drive_io_set_error("read() failed in fixsubprocess_drive_io.", out_error, bufs);
-                            if (!in_done) close(in_fd);
-                            return -1;
+                            goto cleanup;
                         }
                     }
                 }
@@ -372,7 +378,7 @@ int64_t fixsubprocess_drive_io(
             if (bufs[i] == NULL)
             {
                 drive_io_set_error("Out of memory while finalizing subprocess output buffer.", out_error, bufs);
-                return -1;
+                goto cleanup;
             }
             caps[i] = 1;
         }
@@ -382,7 +388,7 @@ int64_t fixsubprocess_drive_io(
             if (new_buf == NULL)
             {
                 drive_io_set_error("Out of memory while finalizing subprocess output buffer.", out_error, bufs);
-                return -1;
+                goto cleanup;
             }
             bufs[i] = new_buf;
             caps[i] = lens[i] + 1;
@@ -392,5 +398,16 @@ int64_t fixsubprocess_drive_io(
 
     *out_buf = bufs[0];
     *err_buf = bufs[1];
-    return 0;
+    rc = 0;
+
+cleanup:
+    if (in_fd >= 0) close(in_fd);
+    if (sigmask_saved)
+    {
+        // Drain any pending SIGPIPE accumulated while blocked, then restore the previous mask.
+        struct timespec zero_ts = {0, 0};
+        while (sigtimedwait(&sigpipe_set, NULL, &zero_ts) >= 0) { /* discard */ }
+        pthread_sigmask(SIG_SETMASK, &old_sigmask, NULL);
+    }
+    return rc;
 }

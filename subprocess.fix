@@ -96,6 +96,12 @@ _drive_io = |in_fp, input, out_fp, err_fp| (
 
         if ret != 0 {
             let msg_ptr = out_error.@(0);
+            // Defensive: the C side may have failed even to allocate an error message (OOM
+            // when allocating the error string itself). In that case `msg_ptr` is NULL and we
+            // must not dereference it.
+            if msg_ptr == nullptr {
+                pure $ Result::err("`fixsubprocess_drive_io` failed and could not allocate an error message (likely out of memory).")
+            };
             let err_msg = *String::unsafe_from_c_str_ptr_io(msg_ptr);
             IO::from_runner(|io| FFI_CALL_IOS[() free(Ptr), msg_ptr, io]);;
             pure $ Result::err $ err_msg
