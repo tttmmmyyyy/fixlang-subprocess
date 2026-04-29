@@ -16,6 +16,12 @@ type ExitStatus = box union {
 // `run_string(com, args, input)` executes a command specified by `com` with arguments `args`, and writes `input` to the standard input of the running command.
 //
 // The result is the pair of standard output and standard error, and an `ExitStatus` value.
+//
+// # Parameters
+//
+// * `com` - The path to the program to run.
+// * `args` - The arguments to be passed to `com`.
+// * `input` - The string to write to the standard input of the running command.
 run_string : String -> Array String -> String -> IOFail ((String, String), ExitStatus);
 run_string = |com, args, input| (
     run_with_stream(com, args, |(stdin, stdout, stderr)| (
@@ -75,6 +81,13 @@ read_stdout_stderr_concurrent = |out_handle, err_handle| (
 // `in_fp = nullptr` means "do not write to or close stdin" (drain-only mode), and `input` is
 // then ignored. Otherwise this helper writes `input` to `in_fp` while concurrently draining
 // stdout and stderr, and closes `in_fp` (sends EOF) once the input is fully written.
+//
+// # Parameters
+//
+// * `in_fp` - The C `FILE*` for the child's stdin, or `nullptr` for drain-only mode.
+// * `input` - The string to write to stdin. Ignored when `in_fp` is `nullptr`.
+// * `out_fp` - The C `FILE*` for the child's stdout.
+// * `err_fp` - The C `FILE*` for the child's stderr.
 _drive_io : Ptr -> String -> Ptr -> Ptr -> IOFail (String, String);
 _drive_io = |in_fp, input, out_fp, err_fp| (
     IOFail::from_io_result $ input.borrow_c_str_io(|input_ptr| do {
@@ -141,9 +154,11 @@ type WaitResult = box struct { is_timeout : U8, wait_failed : U8, exit_status : 
 //
 // `run_string` already takes care of this internally.
 //
-// - `com : String`: The path to the program to run.
-// - `args: Array String`: The arguments to be passed to `com`.
-// - `worker : (IOHandle, IOHandle, IOHandle) -> IOFail a`: Receives three `IOHandle`s which are piped to stdin, stdout and stderr of the running command.
+// # Parameters
+//
+// * `com` - The path to the program to run.
+// * `args` - The arguments to be passed to `com`.
+// * `worker` - Receives three `IOHandle`s which are piped to stdin, stdout and stderr of the running command.
 run_with_stream : String -> Array String -> ((IOHandle, IOHandle, IOHandle) -> IOFail a) -> IOFail (a, ExitStatus);
 run_with_stream = |com, args, worker| (
     IOFail::from_io_result $ args.borrow_boxed_io(|_|
