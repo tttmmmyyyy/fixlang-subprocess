@@ -6,6 +6,8 @@
 #include <unistd.h>
 #include <stdlib.h>
 #include <string.h>
+#include <poll.h>
+#include <errno.h>
 
 // Fork child process and launch process by execvp.
 // * `error_buf` - If no error occurrs, error_buf will be set to pointing NULL.
@@ -157,4 +159,147 @@ void fixsubprocess_wait_subprocess(int64_t pid, double timeout,
         out->stop_signal = (uint8_t)WSTOPSIG(wait_status);
         return;
     }
+}
+
+// Reads all bytes from `out_fp` (child stdout) and `err_fp` (child stderr) concurrently using `poll(2)`.
+// This avoids the classic pipe-buffer deadlock that occurs when the two streams are drained sequentially:
+// if the child writes more than the pipe-buffer capacity (64 KiB on Linux by default) to the stream
+// the parent has not started reading yet, the child blocks on `write` and the parent blocks on `read`.
+//
+// On success returns 0 and writes malloc'd, NUL-terminated buffers to `*out_buf` / `*err_buf`
+// (caller frees with `free`).
+//
+// On failure returns -1 and writes a malloc'd NUL-terminated error message to `*out_error`
+// (caller frees). `*out_buf` and `*err_buf` are set to NULL on failure.
+int64_t fixsubprocess_read_stdout_stderr(
+    FILE *out_fp, FILE *err_fp,
+    char **out_buf, char **err_buf,
+    char **out_error)
+{
+    *out_buf = NULL;
+    *err_buf = NULL;
+    *out_error = NULL;
+
+    int fds[2] = {fileno(out_fp), fileno(err_fp)};
+    char *bufs[2] = {NULL, NULL};
+    size_t lens[2] = {0, 0};
+    size_t caps[2] = {0, 0};
+    int done[2] = {0, 0};
+
+    const size_t CHUNK = 4096;
+
+    while (!done[0] || !done[1])
+    {
+        struct pollfd pfds[2];
+        int idx_map[2] = {-1, -1};
+        nfds_t nfds = 0;
+        for (int i = 0; i < 2; i++)
+        {
+            if (!done[i])
+            {
+                pfds[nfds].fd = fds[i];
+                pfds[nfds].events = POLLIN;
+                pfds[nfds].revents = 0;
+                idx_map[nfds] = i;
+                nfds++;
+            }
+        }
+
+        int pret = poll(pfds, nfds, -1);
+        if (pret < 0)
+        {
+            if (errno == EINTR)
+                continue;
+            const char *msg = "poll() failed while reading subprocess stdout/stderr.";
+            *out_error = (char *)malloc(strlen(msg) + 1);
+            strcpy(*out_error, msg);
+            free(bufs[0]);
+            free(bufs[1]);
+            return -1;
+        }
+
+        for (nfds_t j = 0; j < nfds; j++)
+        {
+            int i = idx_map[j];
+            if (pfds[j].revents & (POLLIN | POLLHUP | POLLERR))
+            {
+                if (lens[i] + CHUNK + 1 > caps[i])
+                {
+                    size_t new_cap = caps[i] == 0 ? (CHUNK * 2) : caps[i] * 2;
+                    while (new_cap < lens[i] + CHUNK + 1)
+                        new_cap *= 2;
+                    char *new_buf = (char *)realloc(bufs[i], new_cap);
+                    if (new_buf == NULL)
+                    {
+                        const char *msg = "Out of memory while reading subprocess stdout/stderr.";
+                        *out_error = (char *)malloc(strlen(msg) + 1);
+                        strcpy(*out_error, msg);
+                        free(bufs[0]);
+                        free(bufs[1]);
+                        return -1;
+                    }
+                    bufs[i] = new_buf;
+                    caps[i] = new_cap;
+                }
+                ssize_t n = read(fds[i], bufs[i] + lens[i], CHUNK);
+                if (n > 0)
+                {
+                    lens[i] += (size_t)n;
+                }
+                else if (n == 0)
+                {
+                    done[i] = 1;
+                }
+                else
+                {
+                    if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)
+                        continue;
+                    const char *msg = "read() failed while reading subprocess stdout/stderr.";
+                    *out_error = (char *)malloc(strlen(msg) + 1);
+                    strcpy(*out_error, msg);
+                    free(bufs[0]);
+                    free(bufs[1]);
+                    return -1;
+                }
+            }
+        }
+    }
+
+    // Ensure each buffer has room for a trailing NUL.
+    for (int i = 0; i < 2; i++)
+    {
+        if (caps[i] == 0)
+        {
+            bufs[i] = (char *)malloc(1);
+            if (bufs[i] == NULL)
+            {
+                const char *msg = "Out of memory while finalizing subprocess output buffer.";
+                *out_error = (char *)malloc(strlen(msg) + 1);
+                strcpy(*out_error, msg);
+                free(bufs[1 - i]);
+                return -1;
+            }
+            caps[i] = 1;
+        }
+        else if (lens[i] + 1 > caps[i])
+        {
+            char *new_buf = (char *)realloc(bufs[i], lens[i] + 1);
+            if (new_buf == NULL)
+            {
+                const char *msg = "Out of memory while finalizing subprocess output buffer.";
+                *out_error = (char *)malloc(strlen(msg) + 1);
+                strcpy(*out_error, msg);
+                free(bufs[0]);
+                free(bufs[1]);
+                return -1;
+            }
+            bufs[i] = new_buf;
+            caps[i] = lens[i] + 1;
+        }
+        bufs[i][lens[i]] = '\0';
+    }
+
+    *out_buf = bufs[0];
+    *err_buf = bufs[1];
+    return 0;
 }
