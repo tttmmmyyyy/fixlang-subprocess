@@ -1,6 +1,6 @@
 # Subprocess
 
-Defined in subprocess@1.1.1
+Defined in subprocess@1.1.2
 
 ## Values
 
