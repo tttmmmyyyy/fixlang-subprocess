@@ -409,8 +409,15 @@ cleanup:
     if (sigmask_saved)
     {
         // Drain any pending SIGPIPE accumulated while blocked, then restore the previous mask.
-        struct timespec zero_ts = {0, 0};
-        while (sigtimedwait(&sigpipe_set, NULL, &zero_ts) >= 0) { /* discard */ }
+        // Avoid `sigtimedwait` because macOS doesn't implement it (POSIX RT extension);
+        // `sigpending` + `sigwait` works on macOS and Linux alike. `sigwait` only blocks when
+        // no signal in the set is pending, which we guard against with `sigpending` first.
+        sigset_t pending;
+        while (sigpending(&pending) == 0 && sigismember(&pending, SIGPIPE))
+        {
+            int sig;
+            sigwait(&sigpipe_set, &sig);
+        }
         pthread_sigmask(SIG_SETMASK, &old_sigmask, NULL);
     }
     return rc;
