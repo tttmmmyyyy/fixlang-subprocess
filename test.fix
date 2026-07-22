@@ -1,7 +1,7 @@
 module Test;
 
 import Std::{
-    Array, IO, String, U8, Array::{fill, push_back}, Debug::assert_eq, FFI::borrow_boxed_io, 
+    Array, IO, String, U8, Array::{fill, push_back}, Debug::assert_eq, Array::borrow_elements_io, 
     IO::{close_file, exit_with_msg, println, read_string, write_string, IOFail::{lift, try}}, 
     String::{unsafe_from_c_str_ptr_io, @size}
 };
@@ -77,7 +77,7 @@ test_round_trip : IO ();
 test_round_trip = (
     println("Round-trip 100_000 B through cat (data integrity check).");;
     let bytes : Array U8 = Array::fill(100000, 'a').push_back('\0');
-    let input : String = *bytes.borrow_boxed_io(unsafe_from_c_str_ptr_io);
+    let input : String = *bytes.borrow_elements_io(unsafe_from_c_str_ptr_io);
     let ((stdout_str, stderr_str), exit_status) = *run_string(
         "cat", ["cat"], input
     ).try(exit_with_msg(1));
@@ -119,7 +119,7 @@ test_child_stdin_unused : IO ();
 test_child_stdin_unused = (
     println("Run \"true\" with 70_000 B of input it never reads (EPIPE path).");;
     let bytes : Array U8 = Array::fill(70000, 'x').push_back('\0');
-    let input : String = *bytes.borrow_boxed_io(unsafe_from_c_str_ptr_io);
+    let input : String = *bytes.borrow_elements_io(unsafe_from_c_str_ptr_io);
     let ((stdout_str, stderr_str), exit_status) = *run_string(
         "true", ["true"], input
     ).try(exit_with_msg(1));
@@ -187,7 +187,7 @@ test_large_input = (
     // A doubling-concatenation construction works under release builds but its deeply nested
     // call structure overflows the stack under `debug = true` (`-O none`).
     let bytes : Array U8 = Array::fill(70000, 'x').push_back('\0');
-    let large_input : String = *bytes.borrow_boxed_io(unsafe_from_c_str_ptr_io);
+    let large_input : String = *bytes.borrow_elements_io(unsafe_from_c_str_ptr_io);
     let ((stdout_str, stderr_str), exit_status) = *run_string(
         "sh",
         ["sh", "-c", "printf '%*s' 70000 ''; cat"],
