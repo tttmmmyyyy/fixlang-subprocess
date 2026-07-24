@@ -2,7 +2,7 @@ module Subprocess;
 
 import Std::{
     Array, F64, I64, IO, Ptr, String, U8, Array::{empty, fill, push_back, @, @size}, 
-    FFI::{borrow_boxed_io, mutate_boxed_io}, 
+    Array::{borrow_elements_io, mutate_elements_io}, FFI::mutate_boxed_io, 
     IO::{
         close_file, from_runner, IOFail, IOHandle, IOFail::{from_io_result, to_result}, 
         IOHandle::{from_file_ptr, get_file_ptr}
@@ -107,9 +107,9 @@ _drive_io = |in_fp, input, out_fp, err_fp| (
         let err_buf : Array Ptr = Array::fill(1, nullptr);
 
         let (out_error, (out_buf, (err_buf, ret))) = *(
-            out_error.mutate_boxed_io(|out_error_ptr|
-                out_buf.mutate_boxed_io(|out_buf_ptr|
-                    err_buf.mutate_boxed_io(|err_buf_ptr|
+            out_error.mutate_elements_io(|out_error_ptr|
+                out_buf.mutate_elements_io(|out_buf_ptr|
+                    err_buf.mutate_elements_io(|err_buf_ptr|
                         IO::from_runner $ |ios| FFI_CALL_IOS[
                             I64 fixsubprocess_drive_io(Ptr, Ptr, Ptr, Ptr, Ptr, Ptr, Ptr),
                             in_fp, input_ptr, out_fp, err_fp, out_buf_ptr, err_buf_ptr, out_error_ptr, ios
@@ -204,14 +204,14 @@ run_with_stream : String -> Array String -> ((IOHandle, IOHandle, IOHandle) -> I
 run_with_stream = |com, args, worker| (
     IOFail::from_io_result $ args._borrow_c_strs_io(|arg_ptrs|
         let arg_ptrs = arg_ptrs.push_back(nullptr); // execvp expects a NULL-terminated argv.
-        arg_ptrs.borrow_boxed_io(|argv_ptr| com.borrow_c_str_io(|com_ptr|
+        arg_ptrs.borrow_elements_io(|argv_ptr| com.borrow_c_str_io(|com_ptr|
             // Execute command.
             let out_error : Array Ptr = Array::fill(1, nullptr);
             let out_files : Array Ptr = Array::fill(3, nullptr);
             let out_pid : Array I64 = Array::fill(1, 0);
-            let (out_error, (out_files, (out_pid, _))) = *out_error.mutate_boxed_io(|out_err_ptr|
-                out_files.mutate_boxed_io(|out_files_ptr|
-                    out_pid.mutate_boxed_io(|out_pid_ptr|
+            let (out_error, (out_files, (out_pid, _))) = *out_error.mutate_elements_io(|out_err_ptr|
+                out_files.mutate_elements_io(|out_files_ptr|
+                    out_pid.mutate_elements_io(|out_pid_ptr|
                         IO::from_runner $ |ios| FFI_CALL_IOS[() fixsubprocess_fork_execvp(Ptr, Ptr, Ptr, Ptr, Ptr), com_ptr, argv_ptr, out_err_ptr, out_files_ptr, out_pid_ptr, ios]
                     )
                 )
@@ -244,7 +244,7 @@ run_with_stream = |com, args, worker| (
             let out = WaitResult { is_timeout: 0_U8, wait_failed: 0_U8, exit_status: 0_U8, exit_status_available: 0_U8, stop_signal: 0_U8, stop_signal_available: 0_U8 };
             let (out, _) = *out.mutate_boxed_io(|out_ptr|
                 IO::from_runner $ |ios| FFI_CALL_IOS[
-                    () fixsubprocess_wait_subprocess(I64, F64, Ptr), 
+                    () fixsubprocess_wait_subprocess(I64, F64, Ptr),
                     pid, -1.0, // No timeout 
                     out_ptr, ios
                 ]
