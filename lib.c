@@ -108,7 +108,7 @@ typedef struct
 //     - `is_timeout = 1` if we returned because `timeout` elapsed.
 //     - `wait_failed = 1` if `waitpid` itself returned an error.
 //     - `exit_status_available = 1` and `exit_status = WEXITSTATUS(...)` if the child exited normally.
-//     - `stop_signal_available = 1` and `stop_signal = WSTOPSIG(...)` if the child was killed by a signal.
+//     - `stop_signal_available = 1` and `stop_signal = WTERMSIG(...)` if the child was killed by a signal.
 void fixsubprocess_wait_subprocess(int64_t pid, double timeout,
                                    WaitResult *out)
 {
@@ -163,7 +163,7 @@ void fixsubprocess_wait_subprocess(int64_t pid, double timeout,
     if (WIFSIGNALED(wait_status))
     {
         out->stop_signal_available = 1;
-        out->stop_signal = (uint8_t)WSTOPSIG(wait_status);
+        out->stop_signal = (uint8_t)WTERMSIG(wait_status);
         return;
     }
 }
