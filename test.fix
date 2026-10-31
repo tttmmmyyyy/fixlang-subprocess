@@ -5,7 +5,7 @@ import Std::{
     IO::{close_file, exit_with_msg, println, read_string, write_string, IOFail::{lift, try}}, 
     String::{unsafe_from_c_str_ptr_io, @size}
 };
-import Subprocess::{read_stdout_stderr_concurrent, run_string, run_with_stream, ExitStatus::as_exit};
+import Subprocess::{read_stdout_stderr_concurrent, run_string, run_with_stream, ExitStatus::{as_exit, as_signaled}};
 test : IO ();
 test = (
     test_ls;;
@@ -14,6 +14,7 @@ test = (
     test_empty_input;;
     test_round_trip;;
     test_nonzero_exit;;
+    test_signaled;;
     test_read_stdout_stderr_concurrent;;
     test_child_stdin_unused;;
     test_large_stderr;;
@@ -94,6 +95,16 @@ test_nonzero_exit = (
         "sh", ["sh", "-c", "exit 42"], ""
     ).try(exit_with_msg(1));
     assert_eq(|_|"exit status is 42", exit_status.as_exit, 42_U8)
+);
+
+// A subprocess killed by a signal: ensure `signaled` carries the number of that signal.
+test_signaled : IO ();
+test_signaled = (
+    println("Run \"sh -c 'kill -TERM $$'\" and check ExitStatus.");;
+    let (_, exit_status) = *run_string(
+        "sh", ["sh", "-c", "kill -TERM $$"], ""
+    ).try(exit_with_msg(1));
+    assert_eq(|_|"signal is 15 (SIGTERM)", exit_status.as_signaled, 15_U8)
 );
 
 // Direct test of `read_stdout_stderr_concurrent` from a `run_with_stream` worker.
